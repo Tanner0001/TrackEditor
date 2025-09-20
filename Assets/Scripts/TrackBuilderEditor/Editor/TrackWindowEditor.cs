@@ -2,7 +2,6 @@ using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.Splines;
-using Unity.Mathematics;
 using System.Collections.Generic;
 
 public class TrackWindowEditor : EditorWindow
@@ -128,7 +127,7 @@ public class TrackWindowEditor : EditorWindow
         }
 
         var placements = BuildPlacements(s);
-        System.Action apply = () => ApplyPlacements(placements);
+        System.Action apply = () => ApplyPlacements(placements, recordUndo);
 
         if (recordUndo)
             EditorUtil.WithUndo(parent, "Generate Along Spline", apply);
@@ -268,7 +267,7 @@ public class TrackWindowEditor : EditorWindow
         };
     }
 
-    void ApplyPlacements(List<PlacementData> placements)
+    void ApplyPlacements(List<PlacementData> placements, bool recordUndo)
     {
         var existing = new List<Transform>();
         for (int i = 0; i < parent.childCount; i++)
@@ -287,6 +286,8 @@ public class TrackWindowEditor : EditorWindow
             else
             {
                 var go = EditorUtil.InstantiatePrefab(prefab, parent);
+                if (recordUndo)
+                    Undo.RegisterCreatedObjectUndo(go, "Create Track Piece");
                 child = go.transform;
             }
 
@@ -332,26 +333,25 @@ public class TrackWindowEditor : EditorWindow
         unchecked
         {
             int hash = s.Count;
-            for (int i = 0; i < s.Count; i++)
+            int samples = Mathf.Clamp(s.Count * 8, 16, 256);
+            for (int i = 0; i <= samples; i++)
             {
-                var knot = s[i];
-                hash = hash * 31 + HashFloat3(knot.Position);
-                hash = hash * 31 + HashFloat3(knot.TangentIn);
-                hash = hash * 31 + HashFloat3(knot.TangentOut);
-                hash = hash * 31 + knot.Rotation.GetHashCode();
+                float t = samples > 0 ? i / (float)samples : 0f;
+                hash = hash * 31 + HashVector3(s.EvaluatePosition(t));
+                hash = hash * 31 + HashVector3(s.EvaluateTangent(t));
             }
             return hash;
         }
     }
 
-    static int HashFloat3(float3 value)
+    static int HashVector3(Vector3 value)
     {
         unchecked
         {
             int hash = 17;
-            hash = hash * 23 + value.x.GetHashCode();
-            hash = hash * 23 + value.y.GetHashCode();
-            hash = hash * 23 + value.z.GetHashCode();
+            hash = hash * 23 + Mathf.RoundToInt(value.x * 1000f);
+            hash = hash * 23 + Mathf.RoundToInt(value.y * 1000f);
+            hash = hash * 23 + Mathf.RoundToInt(value.z * 1000f);
             return hash;
         }
     }
@@ -413,7 +413,7 @@ static class EditorUtil
 {
     public static void WithUndo(Object targetRoot, string label, System.Action act)
     {
-        Undo.RegisterFullObjectHierarchyUndo(targetRoot, label);
+        RegisterUndoHierarchy(targetRoot, label);
         try { act?.Invoke(); }
         finally
         {
@@ -447,5 +447,35 @@ static class EditorUtil
             Object.DestroyImmediate(go);
         else
             Object.Destroy(go);
+    }
+
+    static void RegisterUndoHierarchy(Object targetRoot, string label)
+    {
+#if UNITY_2021_2_OR_NEWER
+        Undo.RegisterFullObjectHierarchyUndo(targetRoot, label);
+#else
+        if (targetRoot == null)
+            return;
+
+        if (targetRoot is GameObject go)
+        {
+            Undo.RegisterCompleteObjectUndo(go, label);
+            if (go.transform != null)
+                Undo.RegisterCompleteObjectUndo(go.transform, label);
+            foreach (Transform child in go.transform)
+                RegisterUndoHierarchy(child.gameObject, label);
+        }
+        else if (targetRoot is Transform tf)
+        {
+            Undo.RegisterCompleteObjectUndo(tf, label);
+            Undo.RegisterCompleteObjectUndo(tf.gameObject, label);
+            foreach (Transform child in tf)
+                RegisterUndoHierarchy(child.gameObject, label);
+        }
+        else
+        {
+            Undo.RegisterCompleteObjectUndo(targetRoot, label);
+        }
+#endif
     }
 }
