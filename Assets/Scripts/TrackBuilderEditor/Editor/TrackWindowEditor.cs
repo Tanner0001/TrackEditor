@@ -226,18 +226,21 @@ public class TrackWindowEditor : EditorWindow
             usableEnd = usableStart;
 
         float usableLength = usableEnd - usableStart;
-        if (usableLength <= 0.01f)
+        float minSingleLength = Mathf.Max(0.01f, spacing * 0.25f);
+        if (usableLength <= minSingleLength)
         {
-            float distance = Mathf.Clamp(usableStart, 0f, totalLen);
-            placements.Add(CreatePlacement(s, distance));
+            float singleDistance = Mathf.Clamp(usableStart, 0f, totalLen);
+            placements.Add(CreatePlacement(s, singleDistance));
             return placements;
         }
 
-        int steps = Mathf.Max(1, Mathf.FloorToInt(usableLength / spacing) + 1);
+        int segmentCount = Mathf.Max(1, Mathf.RoundToInt(usableLength / spacing));
+        int placementCount = Mathf.Clamp(segmentCount + 1, 2, 100000);
 
-        for (int i = 0; i < steps; i++)
+        for (int i = 0; i < placementCount; i++)
         {
-            float distance = Mathf.Min(usableStart + i * spacing, usableEnd);
+            float t = placementCount > 1 ? i / (float)(placementCount - 1) : 0f;
+            float distance = Mathf.Lerp(usableStart, usableEnd, t);
             placements.Add(CreatePlacement(s, distance));
         }
 
