@@ -15,6 +15,7 @@ public class TrackWindowEditor : EditorWindow
     float startOffset = 0f;
     float endOffset = 0f;
     bool alignToTangent = true;
+    bool snapSpacingToPrefab = true;
     bool liveUpdate = false;
 
     int lengthSteps = 512;
@@ -52,7 +53,30 @@ public class TrackWindowEditor : EditorWindow
 
         EditorGUILayout.Space();
         EditorGUILayout.LabelField("Placement", EditorStyles.boldLabel);
-        spacing = Mathf.Max(0.01f, EditorGUILayout.FloatField("Spacing (m)", spacing));
+        var prefabBounds = CalculatePrefabBounds(prefab);
+        snapSpacingToPrefab = EditorGUILayout.ToggleLeft("Snap Spacing To Prefab Length", snapSpacingToPrefab);
+
+        bool usingAutomaticSpacing = snapSpacingToPrefab && prefabBounds.IsValid;
+        float spacingFieldValue = usingAutomaticSpacing ? Mathf.Max(0.01f, prefabBounds.Length) : spacing;
+
+        using (new EditorGUI.DisabledScope(usingAutomaticSpacing))
+        {
+            spacingFieldValue = EditorGUILayout.FloatField("Spacing (m)", spacingFieldValue);
+        }
+
+        if (usingAutomaticSpacing)
+        {
+            EditorGUILayout.LabelField($"Prefab length: {prefabBounds.Length:F3} m", EditorStyles.miniLabel);
+        }
+        else
+        {
+            spacing = Mathf.Max(0.01f, spacingFieldValue);
+        }
+
+        if (snapSpacingToPrefab && !prefabBounds.IsValid && prefab != null)
+        {
+            EditorGUILayout.HelpBox("Prefab bounds not found; manual spacing will be used.", MessageType.Info);
+        }
         startOffset = Mathf.Max(0f, EditorGUILayout.FloatField("Start Offset (m)", startOffset));
         endOffset = Mathf.Max(0f, EditorGUILayout.FloatField("End Offset (m)", endOffset));
         alignToTangent = EditorGUILayout.Toggle("Align to Tangent", alignToTangent);
@@ -211,6 +235,115 @@ public class TrackWindowEditor : EditorWindow
         return 1f;
     }
 
+    PrefabBoundsInfo CalculatePrefabBounds(GameObject targetPrefab)
+    {
+        PrefabBoundsInfo result = default;
+        if (targetPrefab == null)
+            return result;
+
+        var root = targetPrefab.transform;
+        Matrix4x4 rootWorldToLocal = root.worldToLocalMatrix;
+        float minZ = float.PositiveInfinity;
+        float maxZ = float.NegativeInfinity;
+        bool hasBounds = false;
+
+        var meshFilters = targetPrefab.GetComponentsInChildren<MeshFilter>(true);
+        foreach (var filter in meshFilters)
+        {
+            var mesh = filter.sharedMesh;
+            if (mesh == null)
+                continue;
+
+            Matrix4x4 meshToRoot = rootWorldToLocal * filter.transform.localToWorldMatrix;
+            ExpandBounds(ref minZ, ref maxZ, meshToRoot, mesh.bounds);
+            hasBounds = true;
+        }
+
+        var skinnedMeshes = targetPrefab.GetComponentsInChildren<SkinnedMeshRenderer>(true);
+        foreach (var skinned in skinnedMeshes)
+        {
+            var mesh = skinned.sharedMesh;
+            if (mesh == null)
+                continue;
+
+            Matrix4x4 meshToRoot = rootWorldToLocal * skinned.transform.localToWorldMatrix;
+            ExpandBounds(ref minZ, ref maxZ, meshToRoot, mesh.bounds);
+            hasBounds = true;
+        }
+
+        var colliders = targetPrefab.GetComponentsInChildren<Collider>(true);
+        foreach (var collider in colliders)
+        {
+            Bounds localBounds;
+            if (collider is BoxCollider box)
+            {
+                localBounds = new Bounds(box.center, box.size);
+            }
+            else if (collider is SphereCollider sphere)
+            {
+                float diameter = sphere.radius * 2f;
+                localBounds = new Bounds(sphere.center, new Vector3(diameter, diameter, diameter));
+            }
+            else if (collider is CapsuleCollider capsule)
+            {
+                Vector3 size = Vector3.one * (capsule.radius * 2f);
+                switch (capsule.direction)
+                {
+                    case 0: size.x = capsule.height; break;
+                    case 1: size.y = capsule.height; break;
+                    default: size.z = capsule.height; break;
+                }
+                localBounds = new Bounds(capsule.center, size);
+            }
+            else if (collider is MeshCollider meshCollider && meshCollider.sharedMesh != null)
+            {
+                localBounds = meshCollider.sharedMesh.bounds;
+            }
+            else
+            {
+                continue;
+            }
+
+            Matrix4x4 colliderToRoot = rootWorldToLocal * collider.transform.localToWorldMatrix;
+            ExpandBounds(ref minZ, ref maxZ, colliderToRoot, localBounds);
+            hasBounds = true;
+        }
+
+        if (!hasBounds || float.IsNaN(minZ) || float.IsNaN(maxZ) || float.IsInfinity(minZ) || float.IsInfinity(maxZ))
+            return result;
+
+        if (minZ > maxZ)
+        {
+            float temp = minZ;
+            minZ = maxZ;
+            maxZ = temp;
+        }
+
+        result.IsValid = true;
+        result.MinZ = minZ;
+        result.MaxZ = maxZ;
+        return result;
+    }
+
+    static void ExpandBounds(ref float minZ, ref float maxZ, Matrix4x4 localToRoot, Bounds localBounds)
+    {
+        Vector3 center = localBounds.center;
+        Vector3 extents = localBounds.extents;
+
+        for (int i = 0; i < 8; i++)
+        {
+            Vector3 corner = center;
+            corner.x += ((i & 1) == 0) ? -extents.x : extents.x;
+            corner.y += ((i & 2) == 0) ? -extents.y : extents.y;
+            corner.z += ((i & 4) == 0) ? -extents.z : extents.z;
+
+            Vector3 rootSpace = localToRoot.MultiplyPoint3x4(corner);
+            float z = rootSpace.z;
+            if (z < minZ) minZ = z;
+            if (z > maxZ) maxZ = z;
+        }
+    }
+
     List<PlacementData> BuildPlacements(Spline s)
     {
         var placements = new List<PlacementData>();
@@ -224,18 +357,45 @@ public class TrackWindowEditor : EditorWindow
         if (usableEnd < usableStart)
             usableEnd = usableStart;
 
-        float step = Mathf.Max(0.01f, spacing);
-        int maxPlacements = Mathf.Clamp(Mathf.CeilToInt((usableEnd - usableStart) / step) + 2, 1, 100000);
+        var bounds = CalculatePrefabBounds(prefab);
+        float step = Mathf.Max(0.01f, snapSpacingToPrefab && bounds.IsValid ? bounds.Length : spacing);
+        float pivotBackOffset = bounds.IsValid ? -bounds.MinZ : 0f;
+        float segmentLength = bounds.IsValid ? Mathf.Max(0.01f, bounds.Length) : step;
 
-        float distance = usableStart;
-        for (int i = 0; i < maxPlacements && distance <= usableEnd + 1e-3f; i++)
+        float maxContact = Mathf.Max(usableStart, usableEnd - segmentLength);
+        const int MaxPlacements = 100000;
+        var contacts = new List<float>();
+
+        float contact = usableStart;
+        int guard = 0;
+        while (contact <= maxContact + 1e-3f && guard++ < MaxPlacements)
         {
-            placements.Add(CreatePlacement(s, distance));
-            distance += step;
+            contacts.Add(contact);
+            contact += step;
         }
 
-        if (placements.Count == 0)
-            placements.Add(CreatePlacement(s, usableStart));
+        if (contacts.Count == 0)
+        {
+            contacts.Add(usableStart);
+        }
+        else
+        {
+            float lastContact = contacts[contacts.Count - 1];
+            if (maxContact - lastContact > 1e-3f && contacts.Count < MaxPlacements)
+            {
+                contacts.Add(maxContact);
+            }
+            else
+            {
+                contacts[contacts.Count - 1] = maxContact;
+            }
+        }
+
+        foreach (var contactDistance in contacts)
+        {
+            float pivotDistance = Mathf.Clamp(contactDistance + pivotBackOffset, 0f, totalLen);
+            placements.Add(CreatePlacement(s, pivotDistance));
+        }
 
         return placements;
     }
@@ -314,6 +474,7 @@ public class TrackWindowEditor : EditorWindow
             startOffset = this.startOffset,
             endOffset = this.endOffset,
             alignToTangent = this.alignToTangent,
+            snapSpacingToPrefab = this.snapSpacingToPrefab,
             lengthSteps = this.lengthSteps,
             mapSteps = this.mapSteps
         };
@@ -356,6 +517,15 @@ public class TrackWindowEditor : EditorWindow
         public Quaternion rotation;
     }
 
+    struct PrefabBoundsInfo
+    {
+        public bool IsValid;
+        public float MinZ;
+        public float MaxZ;
+
+        public float Length => MaxZ - MinZ;
+    }
+
     struct BuildSettings
     {
         public int splineId;
@@ -365,6 +535,7 @@ public class TrackWindowEditor : EditorWindow
         public float startOffset;
         public float endOffset;
         public bool alignToTangent;
+        public bool snapSpacingToPrefab;
         public int lengthSteps;
         public int mapSteps;
 
@@ -379,6 +550,7 @@ public class TrackWindowEditor : EditorWindow
                    Mathf.Approximately(startOffset, other.startOffset) &&
                    Mathf.Approximately(endOffset, other.endOffset) &&
                    alignToTangent == other.alignToTangent &&
+                   snapSpacingToPrefab == other.snapSpacingToPrefab &&
                    lengthSteps == other.lengthSteps &&
                    mapSteps == other.mapSteps;
         }
@@ -396,6 +568,7 @@ public class TrackWindowEditor : EditorWindow
                 hash = hash * 31 + Mathf.RoundToInt(startOffset * 1000f);
                 hash = hash * 31 + Mathf.RoundToInt(endOffset * 1000f);
                 hash = hash * 31 + (alignToTangent ? 1 : 0);
+                hash = hash * 31 + (snapSpacingToPrefab ? 1 : 0);
                 hash = hash * 31 + lengthSteps;
                 hash = hash * 31 + mapSteps;
                 return hash;
