@@ -17,6 +17,7 @@ public class TrackWindowEditor : EditorWindow
     bool alignToTangent = true;
     bool snapSpacingToPrefab = true;
     bool liveUpdate = false;
+    bool stretchToEnd = false;
 
     int lengthSteps = 512;
     int mapSteps = 2048;
@@ -80,6 +81,7 @@ public class TrackWindowEditor : EditorWindow
         startOffset = Mathf.Max(0f, EditorGUILayout.FloatField("Start Offset (m)", startOffset));
         endOffset = Mathf.Max(0f, EditorGUILayout.FloatField("End Offset (m)", endOffset));
         alignToTangent = EditorGUILayout.Toggle("Align to Tangent", alignToTangent);
+        stretchToEnd = EditorGUILayout.ToggleLeft("Stretch Last Segment To End", stretchToEnd);
         liveUpdate = EditorGUILayout.ToggleLeft("Live Update", liveUpdate);
 
         EditorGUILayout.Space();
@@ -378,7 +380,7 @@ public class TrackWindowEditor : EditorWindow
         {
             contacts.Add(usableStart);
         }
-        else
+        else if (stretchToEnd)
         {
             float lastContact = contacts[contacts.Count - 1];
             if (maxContact - lastContact > 1e-3f && contacts.Count < MaxPlacements)
@@ -475,6 +477,7 @@ public class TrackWindowEditor : EditorWindow
             endOffset = this.endOffset,
             alignToTangent = this.alignToTangent,
             snapSpacingToPrefab = this.snapSpacingToPrefab,
+            stretchToEnd = this.stretchToEnd,
             lengthSteps = this.lengthSteps,
             mapSteps = this.mapSteps
         };
@@ -536,6 +539,7 @@ public class TrackWindowEditor : EditorWindow
         public float endOffset;
         public bool alignToTangent;
         public bool snapSpacingToPrefab;
+        public bool stretchToEnd;
         public int lengthSteps;
         public int mapSteps;
 
@@ -551,6 +555,7 @@ public class TrackWindowEditor : EditorWindow
                    Mathf.Approximately(endOffset, other.endOffset) &&
                    alignToTangent == other.alignToTangent &&
                    snapSpacingToPrefab == other.snapSpacingToPrefab &&
+                   stretchToEnd == other.stretchToEnd &&
                    lengthSteps == other.lengthSteps &&
                    mapSteps == other.mapSteps;
         }
@@ -569,6 +574,7 @@ public class TrackWindowEditor : EditorWindow
                 hash = hash * 31 + Mathf.RoundToInt(endOffset * 1000f);
                 hash = hash * 31 + (alignToTangent ? 1 : 0);
                 hash = hash * 31 + (snapSpacingToPrefab ? 1 : 0);
+                hash = hash * 31 + (stretchToEnd ? 1 : 0);
                 hash = hash * 31 + lengthSteps;
                 hash = hash * 31 + mapSteps;
                 return hash;
